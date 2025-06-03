@@ -1,0 +1,437 @@
+*creating subsets of diagnosis*
+/* Step 1: Set the library */
+libname gabidata "F:/Projects/Student/Gabriela Ochoa Gracia/Final codelist txt";
+libname gabidata "F:/Projects/Student/Gabriela Ochoa Gracia/Final codelist txt";
+
+
+
+/* Step 2: Extract all unique diagnosis values */
+proc sql noprint;
+    select distinct Diagnosis
+    into :diag1 - :diag999
+    from gabidata.GabiCodeNew;
+    
+    %let n_diag = &sqlobs;
+quit;
+%macro subset_by_diagnosis;
+    %do i = 1 %to &n_diag;
+
+        /* Raw diagnosis value */
+        %let rawname = %sysfunc(strip(&&diag&i));
+
+        /* Replace spaces with underscores */
+        %let cleanname = %sysfunc(tranwrd(&rawname, %str( ), _));
+
+        /* Remove invalid characters and truncate to 30 chars */
+        %let cleanname = %sysfunc(compress(&cleanname, , kda));  /* keep letters and digits only */
+        %let cleanname = %substr(&cleanname, 1, 22);               /* ensure name fits SAS limit */
+
+        data gabidata.diagnosis_&cleanname;
+            set gabidata.GabiCodeNew;
+            where Diagnosis = "&&diag&i";
+        run;
+
+    %end;
+%mend;
+
+
+%subset_by_diagnosis;
+*creating subsets of products*
+****create codelists for medications****;
+
+*first we need to define the SAS libraries and link them to our folders by using the folder path;
+*I used two indicative names that I prefer, but you can change them according to what you like;
+libname drug_atc 'F:\Projects\Student\Gabriela Ochoa Gracia\ATC';
+libname codelist 'F:\Projects\Student\Gabriela Ochoa Gracia\Final codelist txt\product codelist';
+
+
+*now we need to import the text file that maps the ATC codes to productIDs;
+
+data drug_atc.product_aurum_atc_Nov2024;
+	informat ProdCodeId $18.;
+	informat ATC $8.;
+	informat atcterm $150.;
+	informat dmdid $19.;
+	informat Term_from_EMIS $255.;
+	informat ProductName $150.;
+	informat Formulation $40.;
+	informat RouteOfAdministration $40.;
+	informat DrugSubstanceName $150.;
+	informat SubstanceStrength $20.;
+	informat BNFChapter $8.;
+	informat DrugIssues 8.;	
+	infile 'F:\Projects\Student\Gabriela Ochoa Gracia\ATC\2024-11_CPRD_AURUM_mapped.txt' dlm=',' firstobs=2 truncover;
+	input ProdCodeId $ ATC $ atcterm $ dmdid $ Term_from_EMIS $ ProductName $ Formulation $ RouteOfAdministration $ DrugSubstanceName $ SubstanceStrength $ BNFChapter $ DrugIssues ;
+run;
+
+*now we can use the product_aurum dataset to create each medication codelist according to the ATC codes;
+
+*for example the code below creates a code list for SGLT2is plain, look into r doc for my codes;
+
+data codelist.sglt2_p;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="A10BK";
+run;
+
+***the prefix that you use before the name of each dataset defines the library that your sas dataset is stored, for example above I used codelist. and this saves the dataset with the codes for acei plain in the library codelist;
+***when you want to use that file you should always start with the prefix codelist. because otherwise SAS cannot recognize the dataset;
+
+*combine more than one ATC codes; 
+*for example C09A and C09B;
+**create the codelist for loop or thiazide diuretics;
+data codelist.sglt2_comb_met;
+set drug_atc.product_aurum_atc_nov2024;
+where substr(ATC,1,7)="A10BD15" | substr(ATC,1,7)="A10BD16"| substr(ATC,1,7)="A10BD20"| substr(ATC,1,7)="A10BD23";
+run;
+
+data codelist.sglt2_comb_dpp4;
+set drug_atc.product_aurum_atc_nov2024;
+where substr(ATC,1,7)="A10BD19" | substr(ATC,1,7)="A10BD21"| substr(ATC,1,7)="A10BD24"| substr(ATC,1,7)="A10BD29"| substr(ATC,1,7)="A10BD30";
+run;
+
+data codelist.sglt2_comb_dpp4_met;
+set drug_atc.product_aurum_atc_nov2024;
+where substr(ATC,1,7)="A10BD25" | substr(ATC,1,7)="A10BD27";
+run;
+
+data codelist.dpp4_p;
+set drug_atc.product_aurum_atc_nov2024;
+where substr(ATC,1,7)="A10BH01"| substr(ATC,1,7)="A10BH02"| substr(ATC,1,7)="A10BH03"| substr(ATC,1,7)="A10BH04"| substr(ATC,1,7)="A10BH05"| substr(ATC,1,7)="A10BH06"| substr(ATC,1,7)="A10BH07"| substr(ATC,1,7)="A10BH08";
+run;
+
+
+data codelist.dpp4_comb_statin;
+set drug_atc.product_aurum_atc_nov2024;
+where substr(ATC,1,7)="A10BH51"| substr(ATC,1,7)="A10BH52";
+run;
+
+
+data codelist.dpp4_comb_met;
+set drug_atc.product_aurum_atc_nov2024;
+where substr(ATC,1,7)="A10BD07"| substr(ATC,1,7)="A10BD08"| substr(ATC,1,7)="A10BD10"| substr(ATC,1,7)="A10BD11"| substr(ATC,1,7)="A10BD13"| substr(ATC,1,7)="A10BD22"| substr(ATC,1,7)="A10BD28"| substr(ATC,1,7)="A10BD18" ;
+run;
+
+data codelist.dpp4_comb_thiazolidione;
+set drug_atc.product_aurum_atc_nov2024;
+where substr(ATC,1,7)="A10BD12" | substr(ATC,1,7)="A10BD09";
+run;
+
+/* GLP1RS */
+data codelist.glp1rs;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="A10BJ";
+run;
+
+/* Biguanidas */
+data codelist.biguanidas;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,7)="A10BA01" | substr(ATC,1,7)="A10BA03" | substr(ATC,1,7)="A10BA02";
+run;
+
+/* Biguanidas combined with other GLMs */
+data codelist.bigu_comb_glm;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,7)="A10BD02" | substr(ATC,1,7)="A10BD03" | substr(ATC,1,7)="A10BD05" | substr(ATC,1,7)="A10BD26" | substr(ATC,1,7)="A10BD17" | substr(ATC,1,7)="A10BD14" | substr(ATC,1,7)="A10BD01";
+run;
+
+/* Sulfonylurea plain */
+data codelist.sulfonylurea_plain;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="A10BB";
+run;
+
+/* Sulfonylurea + thiazolidinedione */
+data codelist.sulfonylurea_thia;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,7)="A10BD04" | substr(ATC,1,7)="A10BD06";
+run;
+
+/* Alfa glucoside inhibitors */
+data codelist.alfaglucoside;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="A10BF";
+run;
+
+/* Thiazolidinediones */
+data codelist.thiazolidinediones;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="A10BG";
+run;
+
+/* Insulin */
+data codelist.insulin;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,4)="A10A";
+run;
+
+/* Other GLMs */
+data codelist.other_glm;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="A10BX";
+run;
+
+/* Beta-blockers */
+data codelist.betablocker_plain;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,4)="C07A";
+run;
+
+data codelist.betablocker_comb_diuretics;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,4)="C07B" | substr(ATC,1,4)="C07C" | substr(ATC,1,4)="C07D";
+run;
+
+data codelist.betablocker_comb_ccb;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="C07FB";
+run;
+
+data codelist.betablocker_comb_other;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="C07FX";
+run;
+
+/* ACE inhibitors */
+data codelist.ace_plain;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,4)="C09A";
+run;
+
+data codelist.ace_comb_diuretics;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="C09BA";
+run;
+
+data codelist.ace_comb_ccb;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="C09BB";
+run;
+
+/* ARBs */
+data codelist.arb_plain;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,4)="C09C";
+run;
+
+data codelist.arb_comb_diuretics;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="C09DA";
+run;
+
+data codelist.arb_comb_ccb;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="C09DB";
+run;
+
+/* Aldosterone antagonists */
+data codelist.aldosterone_antagonists;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,7)="C03DA01" | substr(ATC,1,7)="C03DA04";
+run;
+
+/* Diuretics */
+data codelist.thiazide_all;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,4)="C03A";
+run;
+
+data codelist.low_ceiling_nonthiazide_all;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,4)="C03B";
+run;
+
+data codelist.high_ceiling_all;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,4)="C03C";
+run;
+
+data codelist.potassium_sparing_agents_all;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,4)="C03D";
+run;
+
+data codelist.comb_diuretics_potassium_sparing_agents;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,4)="C03E";
+run;
+
+data codelist.other_diuretics;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,4)="C03X";
+run;
+
+/* Statins */
+data codelist.statins_plain;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="C10AA";
+run;
+
+data codelist.statins_comb_lipid;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,7) in ("C10BA01","C10BA02","C10BA03","C10BA04","C10BA05","C10BA06","C10BA07","C10BA08","C10BA09","C10BA11","C10BA12");
+run;
+
+data codelist.statins_comb_nonlipid;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="C10BX";
+run;
+
+/* CCBs */
+data codelist.ccb_plain;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5) in ("C08CA", "C08CX", "C08DA", "C08DB", "C08EA", "C08EX");
+run;
+
+data codelist.ccb_comb_diuretics;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="C08GA";
+run;
+
+/* Antiplatelets and anticoagulants */
+data codelist.antiplatelet;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,5)="B01AC";
+run;
+
+data codelist.warfarin;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,7)="B01AA03";
+run;
+
+/* Cardiac drugs */
+data codelist.digotoxinanddigoxin;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,7)="C01AA04" | substr(ATC,1,7)="C01AA05";
+run;
+
+data codelist.antiarrhytmics;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,7)="C01BC04" | substr(ATC,1,7)="C01BD01";
+run;
+
+/* Corticosteroids */
+data codelist.corticosteroid;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,4)="H02A" | substr(ATC,1,4)="H02B";
+run;
+
+/* Weight loss drugs */
+data codelist.weightloss;
+set drug_atc.Product_aurum_atc_nov2024;
+where substr(ATC,1,4)="A08";
+run;
+
+/*Now we will do the merging of diagnosis*/
+libname rawdata "F:\Projects\Student\Gabriela Ochoa Gracia\CPRD_Aurum_Simulated_data";
+libname codes "F:\Projects\Student\Gabriela Ochoa Gracia\Final codelist txt";
+libname subsets "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Diagnosis";
+
+proc contents data=rawdata.observation_char; run;
+proc contents data=codes.diagnosis_diabetestype2; run;
+
+/* Macro to join each diagnosis file with the observation file */
+
+%macro join_with_observation(
+    upd_lib=codes, 
+    rawdata_lib=rawdata, 
+    rawdata_table=observation_char, 
+    out_lib=subsets, 
+    suffix=_subset
+);
+
+    proc sql noprint;
+        select memname into :dslist separated by ' '
+        from dictionary.tables
+        where libname = upcase("&upd_lib.");
+    quit;
+
+    %let i = 1;
+    %do %while(%scan(&dslist., &i) ne );
+        %let dsname = %scan(&dslist., &i);
+		%let shortname = %substr(&dsname, 1, 20);
+%let out_table = &out_lib..&shortname.&suffix.;
+
+        %put Processing &dsname. ? Saving as &out_table.;
+
+        proc sort data=&upd_lib..&dsname;
+            by MedCodeId;
+        run;
+
+        data &out_table;
+            merge &rawdata_lib..&rawdata_table(in=ina)
+                  &upd_lib..&dsname(in=inb);
+            by MedCodeId;
+            if ina and inb;
+        run;
+
+        %let i = %eval(&i + 1);
+    %end;
+
+%mend join_with_observation;
+
+/* Run the macro */
+%join_with_observation();
+
+/*Still doesnt work*/
+
+/*join by product id the rwadta filea an dteh codelist files*/
+libname rawdata "F:\Projects\Student\Gabriela Ochoa Gracia\CPRD_Aurum_Simulated_data";
+libname upd "F:\Projects\Student\Gabriela Ochoa Gracia\Final codelist txt\product codelist"; 
+libname subs "F:\Projects\Student\Gabriela Ochoa Gracia\Subset_Product";
+/*Check if product id is numeric or a character*/
+proc contents data=rawdata.product_aurum_simulated; run;
+proc contents data=upd.thiazolidinediones; run;
+/*now we join on product id*/
+proc datasets lib=rawdata; run;
+
+%macro join_with_drugissue(upd_lib=, rawdata_lib=, rawdata_table=, out_lib=, suffix=);
+
+    * Get a list of all datasets in codelist library;
+    proc sql noprint;
+        select memname into :dslist separated by ' '
+        from dictionary.tables
+        where libname=upcase("&upd_lib.");
+    quit;
+
+    %put Dataset List in UPD: &dslist.;
+
+    * loop through each of the datasets in codelist library;
+    %let i = 1;
+    %do %while(%scan(&dslist., &i) ne );
+
+        %let dsname = %scan(&dslist., &i);
+        %let out_table = &out_lib..&dsname.&suffix.; 
+        
+        %put Processing dataset: &dsname.;
+
+        * Sort the codelist dataset;
+        proc sort data=&upd_lib..&dsname;
+            by ProdcodeId;
+        run;
+
+        * Create a subset by merging drug issue with current codelist in loop;
+        data &out_table;            
+            * merge datasets, keeps only relevant columns;
+            merge &rawdata_lib..&rawdata_table(in=ina)
+                  &upd_lib..&dsname(in=inb);
+            by ProdcodeId;
+            
+            * inner join: You keep records where ProdcodeId exists in both datasets;
+            if ina and inb;  
+        run;
+
+        %put Created drug issue subset table: &out_table.;
+
+        %let i = %eval(&i + 1);
+    %end;
+
+%mend join_with_drugissue;
+
+* Call the macro;
+%join_with_drug_issue(upd_lib=upd, 
+                      rawdata_lib=rawdata, 
+                      rawdata_table=drugissue, 
+                      out_lib=subs, 
+                      suffix=_subset);
+
+
