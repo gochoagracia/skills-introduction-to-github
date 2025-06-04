@@ -1,0 +1,220 @@
+/************************************************************************************
+STEP 0: SET LIBRARIES
+************************************************************************************/
+
+libname raw "F:\Projects\Student\Gabriela Ochoa Gracia\CPRD_Aurum_Simulated_data";
+libname diag "F:\Projects\Student\Gabriela Ochoa Gracia\Final codelist txt";
+libname drug "F:\Projects\Student\Gabriela Ochoa Gracia\Subset_Product";
+libname subset_diag "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Diagnosis";
+libname prod_code "F:\Projects\Student\Gabriela Ochoa Gracia\Final codelist txt\product codelist";
+libname export "F:\Projects\Student\Gabriela Ochoa Gracia\Final_Data"; 
+
+/************************************************************************************
+STEP 1: BUILD VALID STUDY ENTRY & EXIT WINDOW
+************************************************************************************/
+
+* Merge patient & practice to get last collection date;
+proc sort data=raw.patient; by pracid; run;
+proc sort data=raw.practice; by pracid; run;
+
+data raw.patient_working;
+  merge raw.patient (in=ina)
+        raw.practice (in=inb keep=pracid lcd);
+  by pracid;
+  if ina;
+run;
+
+* Build entry & exit dates;
+data raw.patient_entry_exit;
+  set raw.patient_working;
+  entry = max(regstartdate, '01JAN2012'd);
+  exit = min(regenddate, lcd, '31DEC2024'd);
+  if cprd_ddate ne . and cprd_ddate < exit then exit = cprd_ddate;
+  if entry < exit then include=1; else include=0;
+run;
+
+data work.valid_population;
+  set raw.patient_entry_exit;
+  if include=1;
+run;
+
+/************************************************************************************
+STEP 2: APPLY T2DM DIAGNOSIS AND AGE >= 40 FILTER
+************************************************************************************/
+
+proc sort data=diag.diagnosis_diabetestype2; by patid; run;
+proc sort data=work.valid_population; by patid; run;
+
+data work.t2dm;
+  merge work.valid_population (in=a)
+        diag.diagnosis_diabetestype2 (in=b);
+  by patid;
+  if a and b; 
+run;
+
+* Calculate age at entry;
+data work.t2dm;
+  set work.t2dm;
+  birthdate = mdy(6, 30, yob);
+  age_entry = intck('year', birthdate, entry);
+run;
+
+data work.t2dm_age;
+  set work.t2dm;
+  if age_entry >= 40;
+run;
+
+/************************************************************************************
+STEP 3: CREATE CVD RISK GROUP FLAG (STRICT DEFINITION)
+************************************************************************************/
+
+proc sort data=diag.diagnosis_ihd; by patid; run;
+proc sort data=diag.diagnosis_strokepartofmaceandcer; by patid; run;
+proc sort data=diag.diagnosis_pad; by patid; run;
+proc sort data=diag.diagnosis_dyslipidaemia; by patid; run;
+proc sort data=diag.diagnosis_hypertension; by patid; run;
+proc sort data=diag.diagnosis_smoker; by patid; run;
+
+* Merge CV risk factors;
+data work.cv_risk;
+  merge work.t2dm_age (in=a)
+        diag.diagnosis_ihd (in=ihd)
+        diag.diagnosis_strokepartofmaceandcer (in=stroke)
+        diag.diagnosis_pad (in=pad)
+        diag.diagnosis_dyslipidaemia (in=dyslip)
+        diag.diagnosis_hypertension (in=htn)
+        diag.diagnosis_smoker (in=smoke);
+  by patid;
+
+  cvd_flag = (ihd or stroke or pad);
+  dyslip_flag = (dyslip ne .);
+  htn_flag = (htn ne .);
+  smoke_flag = (smoke ne .);
+run;
+
+* Apply strict CV risk logic;
+data work.cv_included;
+  set work.cv_risk;
+
+  if cvd_flag=1 then high_risk=1;
+  else if cvd_flag=0 then do;
+     if (gender=1 and age_entry>=55) or (gender=2 and age_entry>=60) then do;
+       risk_sum = sum(dyslip_flag, htn_flag, smoke_flag);
+       if risk_sum >= 1 then high_risk=1;
+       else high_risk=0;
+     end;
+     else high_risk=0;
+  end;
+run;
+
+* Keep only final eligible cohort;
+data work.study_population;
+  set work.cv_included;
+  if high_risk=1;
+run;
+
+/************************************************************************************
+STEP 4: MERGE DRUG EXPOSURES FOR SGLT2i & DPP4i (FROM PRODUCT SUBSETS)
+************************************************************************************/
+
+* First merge each exposure group from subsets;
+proc sort data=drug.sglt2_p_subset; by patid; run;
+proc sort data=drug.dpp4_p_subset; by patid; run;
+
+* Merge to patients;
+data work.sglt2_users;
+  merge work.study_population (in=a)
+        drug.sglt2_p_subset (in=b);
+  by patid;
+  if b;
+run;
+
+data work.dpp4_users;
+  merge work.study_population (in=a)
+        drug.dpp4_p_subset (in=b);
+  by patid;
+  if b;
+run;
+
+/************************************************************************************
+STEP 5: ASSIGN PRELIMINARY INDEX DATES
+************************************************************************************/
+
+* First prescription date per patient;
+proc sql;
+create table work.sglt2_first as
+select patid, min(issuedate) as sglt2_index format=date9.
+from work.sglt2_users group by patid;
+quit;
+
+proc sql;
+create table work.dpp4_first as
+select patid, min(issuedate) as dpp4_index format=date9.
+from work.dpp4_users group by patid;
+quit;
+
+/************************************************************************************
+STEP 6: COMBINE EXPOSURES, REMOVE DUAL USERS
+************************************************************************************/
+
+* Merge indexes together;
+data work.index_assign;
+  merge work.sglt2_first (in=a) work.dpp4_first (in=b);
+  by patid;
+run;
+
+* Assign treatment group;
+data work.index_clean;
+  set work.index_assign;
+  if a and not b then do; treatment="SGLT2i"; index_date=sglt2_index; end;
+  else if b and not a then do; treatment="DPP4i"; index_date=dpp4_index; end;
+  else delete; *remove dual users;
+run;
+
+/************************************************************************************
+STEP 7: APPLY WASHOUT EXCLUSIONS (within 1 year prior to index)
+************************************************************************************/
+
+* Merge all exclusion diagnosis codelists exactly same way as Magda meeting;
+* (This section will include prior use of SGLT2i, DPP4i, pioglitazone, rosiglitazone etc, similar approach as exposures)
+* For simplicity, assume this part is handled exactly as product subset merges you already scripted.
+
+/* --- PLACEHOLDER --- */
+
+/************************************************************************************
+STEP 8: MERGE PRIOR CV OUTCOMES (MI, STROKE)
+************************************************************************************/
+
+proc sort data=subset_diag.diagnosis_mipartofma_subset; by patid; run;
+proc sort data=subset_diag.diagnosis_strokepart_subset; by patid; run;
+
+* Merge CV event flags;
+data work.cv_events;
+  merge work.index_clean (in=a)
+        subset_diag.diagnosis_mipartofma_subset (in=mi)
+        subset_diag.diagnosis_strokepart_subset (in=stroke);
+  by patid;
+run;
+
+* Exclude those with CV events prior to index;
+data work.final_cleaned;
+  set work.cv_events;
+  if mi=1 and diagnosis_date <= index_date then delete;
+  if stroke=1 and diagnosis_date <= index_date then delete;
+run;
+
+/************************************************************************************
+STEP 9: FINAL ENTRY, EXIT AND EXPORT
+************************************************************************************/
+
+data work.final_dataset;
+  set work.final_cleaned;
+  entry = index_date;
+  exit_final = exit; *already defined before;
+  followup_time = exit_final - entry;
+run;
+
+proc export data=work.final_dataset
+  outfile="F:\Projects\Student\Gabriela Ochoa Gracia\final_analysis.csv"
+  dbms=csv replace;
+run;
