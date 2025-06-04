@@ -213,8 +213,17 @@ data work.final_dataset;
   exit_final = exit; *already defined before;
   followup_time = exit_final - entry;
 run;
-
+/*explanation of steps: 
+Step 1	Create valid patient population using entry/exit logic (exactly like Vasiliki’s peer code)
+Step 2	Apply T2DM diagnosis + age ≥ 40
+Step 3	Apply your strict CV risk definition (CVD OR ≥55M/≥60F + ≥1 risk factor)
+Step 4	Merge exposures (SGLT2i and DPP4i) from product subsets
+Step 5	Assign preliminary index date (first prescription after study start)
+Step 6	Create mutually exclusive cohorts (SGLT2i vs DPP4i)
+Step 7	Placeholder for further exclusion (washout, pioglitazone, etc — we will fill this)
+Step 8	Exclude prior MI and Stroke
+Step 9	Build final cohort with entry/exit/follow-up ready for R
 proc export data=work.final_dataset
   outfile="F:\Projects\Student\Gabriela Ochoa Gracia\final_analysis.csv"
   dbms=csv replace;
-run;
+run; */
