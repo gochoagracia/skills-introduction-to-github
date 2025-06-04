@@ -1,0 +1,67 @@
+libname raw 'F:\Projects\Student\Vasiliki Tassopoulou\Raw';
+
+***work on the raw patient file to bring it to the form raw.patient_new;
+
+proc sort data=raw.patient;
+by pracid;
+run;
+
+proc sort data=raw.practice;
+by pracid;
+run;
+
+data raw.patient_new;
+merge raw.patient (in=ina)raw.practice (in=inb keep= pracid lcd);
+by pracid;
+if ina;
+run;
+
+***create the variables init and exit in the patient new;
+ 
+data raw.patient_new;
+set raw.patient_new;
+init=regstartdate;
+exit=lcd;
+include=0;
+if cprd_ddate< exit and cprd_ddate<>. then exit=cprd_ddate;
+if regenddate< exit and regenddate<>. then exit=regenddate;
+if init<exit then include=1;
+format init ddmmyy10. exit ddmmyy10. ;
+run;
+
+data raw.patient_work;
+set raw.patient_new;
+where include=1;
+run;
+
+
+*merge the HF_studyper_pcrecord with the primary.patient_valid to get only the patients with valid primary care records;
+
+proc sort data = primary.patient_valid;
+by patid;
+run;
+
+proc sort data = HF_studyper_pcrecord;
+by patid;
+run;
+
+data med.HF_studyper_pcrecord_accept;
+merge primary.patient_valid(in=ina) HF_studyper_pcrecord (in=inb);
+by patid;
+if ina and inb;
+run;
+
+
+*see how many patients had their HF diagnosis after their exit date and exclude them as well;
+data check;
+set med.HF_studyper_pcrecord_accept;
+if date > exit then exclude = 1; else exclude = 0;
+run;
+
+proc freq data = check;
+tables exclude;
+
+data med.HF_studyper_pcrecord_accept_new;
+set check;
+where exclude=0;
+run;
