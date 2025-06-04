@@ -250,3 +250,67 @@ proc export data=work.final_dataset
   outfile="F:\Projects\Student\Gabriela Ochoa Gracia\final_analysis.csv"
   dbms=csv replace;
 run;
+/*********************************************************************************************
+STEP 10: MERGE COVARIATES BEFORE EXPORT
+*********************************************************************************************/
+
+libname subset_diag "F:\\Projects\\Student\\Gabriela Ochoa Gracia\\Subsets_Diagnosis";
+libname subset_prod "F:\\Projects\\Student\\Gabriela Ochoa Gracia\\Subset_Product";
+
+/*** Sort files for merging ***/
+
+proc sort data=work.final_cleaned; by patid; run;
+proc sort data=subset_diag.frailty_subset; by patid; run;
+proc sort data=subset_diag.obesity_subset; by patid; run;
+proc sort data=subset_diag.ckd_subset; by patid; run;
+proc sort data=subset_diag.cancer_subset; by patid; run;
+proc sort data=subset_diag.copd_subset; by patid; run;
+proc sort data=subset_prod.statin_subset; by patid; run;
+proc sort data=subset_prod.insulin_subset; by patid; run;
+proc sort data=subset_prod.antihypertensives_subset; by patid; run;
+
+/*** Merge all covariates to final cohort ***/
+
+data work.final_with_covariates;
+  merge work.final_cleaned (in=a)
+        subset_diag.frailty_subset (in=b)
+        subset_diag.obesity_subset (in=c)
+        subset_diag.ckd_subset (in=d)
+        subset_diag.cancer_subset (in=e)
+        subset_diag.copd_subset (in=f)
+        subset_prod.statin_subset (in=g)
+        subset_prod.insulin_subset (in=h)
+        subset_prod.antihypertensives_subset (in=i);
+  by patid;
+
+  /* Create binary flags for covariates */
+  frailty_flag = (b);
+  obesity_flag = (c);
+  ckd_flag = (d);
+  cancer_flag = (e);
+  copd_flag = (f);
+  statin_flag = (g);
+  insulin_flag = (h);
+  antihypertensive_flag = (i);
+run;
+
+/*** Export final dataset ready for R ***/
+
+proc export data=work.final_with_covariates
+  outfile="F:\\Projects\\Student\\Gabriela Ochoa Gracia\\final_analysis_with_covariates.csv"
+  dbms=csv replace;
+run;
+/*| Step        | What we coded                   | What happened                                                             |
+| ----------- | ------------------------------- | ------------------------------------------------------------------------- |
+| **Step 1**  | Build valid entry/exit          | Create entry/exit windows like your peer Vasiliki                         |
+| **Step 2**  | Apply T2DM + age eligibility    | Merge diagnosis\_diabetestype2\_subset                                    |
+| **Step 3**  | Apply strict CV risk definition | Merge all CV risk factors (ihd, stroke, pad, dyslipidemia, etc.)          |
+| **Step 4**  | Assign initial exposures        | Merge first use of SGLT2i and DPP4i                                       |
+| **Step 5**  | Apply washout exclusions        | Exclude prior use of SGLT2i, DPP4i, pioglitazone, rosiglitazone           |
+| **Step 6**  | Exclude prior CV events         | Merge MI, stroke diagnoses and exclude those with prior event             |
+| **Step 7**  | Define follow-up windows        | Assign entry (index\_date), exit (exit\_final), follow-up time            |
+| **Step 8**  | (Was not originally separate)   | In fact: this is where you'd normally handle *outcome ascertainment*      |
+| **Step 9**  | (Was not originally separate)   | Here you'd normally handle death outcomes (if needed)                     |
+| **Step 10** | Merge covariates                | Add all your comorbidity covariates (frailty, obesity, ckd, cancer, etc.) |
+*/
+
