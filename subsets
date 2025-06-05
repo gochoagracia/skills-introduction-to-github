@@ -326,7 +326,7 @@ libname rawdata "F:\Projects\Student\Gabriela Ochoa Gracia\CPRD_Aurum_Simulated_
 libname codes "F:\Projects\Student\Gabriela Ochoa Gracia\Final codelist txt";
 libname subsets "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Diagnosis";
 
-proc contents data=rawdata.observation_char; run;
+proc contents data=rawdata.observation; run;
 proc contents data=codes.diagnosis_diabetestype2; run;
 
 /* Macro to join each diagnosis file with the observation file */
@@ -334,7 +334,7 @@ proc contents data=codes.diagnosis_diabetestype2; run;
 %macro join_with_observation(
     upd_lib=codes, 
     rawdata_lib=rawdata, 
-    rawdata_table=observation_char, 
+    rawdata_table=observation, 
     out_lib=subsets, 
     suffix=_subset
 );
