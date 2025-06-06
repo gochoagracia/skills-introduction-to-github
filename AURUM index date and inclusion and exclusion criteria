@@ -17,8 +17,8 @@ libname export "F:\Projects\Student\Gabriela Ochoa Gracia\Final_Data";
 STEP 1: BUILD VALID STUDY ENTRY & EXIT WINDOW
 ************************************************************************************/
 
-proc sort data=raw.patient; by pracid; run;
-proc sort data=raw.practice; by pracid; run;
+proc sort data=raw.patient; by pracid; run; /*registration start, end, date of birth, practice ID*/
+proc sort data=raw.practice; by pracid; run; /*practice last collection date lcd*/
 
 data raw.patient_working;
   merge raw.patient (in=ina)
