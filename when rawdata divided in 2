@@ -1,7 +1,7 @@
 /*Now we will do the merging of diagnosis*/
 libname rawdata "F:\Projects\Student\Gabriela Ochoa Gracia\Rawdata";
 libname codes "F:\Projects\Student\Gabriela Ochoa Gracia\Final codelist txt";
-libname subsets "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Diagnosis";
+libname subsets "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Diagnosis_aurum";
 ****Updated Macro for Diagnosis File Merge (with dual rawdata split)****
 
 %macro join_with_observation_split(upd_lib=, rawdata_lib=, rawdata_table1=, rawdata_table2=, out_lib1=, out_lib2=, final_out_lib=, suffix=_subset);
@@ -54,6 +54,9 @@ libname subsets "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Diagnosis";
                              final_out_lib=Subset_Diagnosis_aurum);
 
 ***Doing the same for the product and drugissue***
+libname rawdata "F:\Projects\Student\Gabriela Ochoa Gracia\Rawdata";
+libname codes "F:\Projects\Student\Gabriela Ochoa Gracia\Final codelist txt";
+libname subsets "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Product_aurum";
 ***Updated Macro for Product File Merge (with dual rawdata split)****
 
 %macro join_with_drugissue_split(upd_lib=, rawdata_lib=, rawdata_table1=, rawdata_table2=, out_lib1=, out_lib2=, final_out_lib=, suffix=_subset);
