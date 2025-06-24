@@ -1,0 +1,105 @@
+****Updated Macro for Diagnosis File Merge (with dual rawdata split)****
+
+%macro join_with_observation_split(upd_lib=, rawdata_lib=, rawdata_table1=, rawdata_table2=, out_lib1=, out_lib2=, final_out_lib=, suffix=_subset);
+
+    proc sql noprint;
+        select memname into :dslist separated by ' '
+        from dictionary.tables
+        where libname = upcase("&upd_lib.");
+    quit;
+
+    %let i = 1;
+    %do %while(%scan(&dslist., &i) ne );
+        %let dsname = %scan(&dslist., &i);
+
+        %let shortname = %substr(&dsname, 1, 20);
+        %let out_table1 = &out_lib1..&shortname.&suffix.;
+        %let out_table2 = &out_lib2..&shortname.&suffix.;
+        %let final_out = &final_out_lib..&shortname.&suffix.;
+
+        proc sort data=&upd_lib..&dsname; by MedCodeId; run;
+
+        data &out_table1;
+            merge &rawdata_lib..&rawdata_table1(in=ina) &upd_lib..&dsname(in=inb);
+            by MedCodeId;
+            if ina and inb;
+        run;
+
+        data &out_table2;
+            merge &rawdata_lib..&rawdata_table2(in=ina) &upd_lib..&dsname(in=inb);
+            by MedCodeId;
+            if ina and inb;
+        run;
+
+        data &final_out;
+            set &out_table1 &out_table2;
+        run;
+
+    %let i = %eval(&i + 1);
+    %end;
+%mend;
+
+***How to Call the Updated Macro***
+
+%join_with_observation_split(upd_lib=diag, 
+                             rawdata_lib=rawdata, 
+                             rawdata_table1=observation1, 
+                             rawdata_table2=observation2,
+                             out_lib1=obs1, 
+                             out_lib2=obs2, 
+                             final_out_lib=Subset_Diagnosis_aurum);
+
+***Doing the same for the product and drugissue***
+***Updated Macro for Product File Merge (with dual rawdata split)****
+
+%macro join_with_drugissue_split(upd_lib=, rawdata_lib=, rawdata_table1=, rawdata_table2=, out_lib1=, out_lib2=, final_out_lib=, suffix=_subset);
+
+    proc sql noprint;
+        select memname into :dslist separated by ' '
+        from dictionary.tables
+        where libname = upcase("&upd_lib.");
+    quit;
+
+    %let i = 1;
+    %do %while(%scan(&dslist., &i) ne );
+        %let dsname = %scan(&dslist., &i);
+
+        %let shortname = %substr(&dsname, 1, 20);
+        %let out_table1 = &out_lib1..&shortname.&suffix.;
+        %let out_table2 = &out_lib2..&shortname.&suffix.;
+        %let final_out = &final_out_lib..&shortname.&suffix.;
+
+        proc sort data=&upd_lib..&dsname; by ProdcodeId; run;
+
+        data &out_table1;
+            merge &rawdata_lib..&rawdata_table1(in=ina) &upd_lib..&dsname(in=inb);
+            by ProdCodeId;
+            if ina and inb;
+        run;
+
+        data &out_table2;
+            merge &rawdata_lib..&rawdata_table2(in=ina) &upd_lib..&dsname(in=inb);
+            by ProdCodeId;
+            if ina and inb;
+        run;
+
+        data &final_out;
+            set &out_table1 &out_table2;
+        run;
+
+    %let i = %eval(&i + 1);
+    %end;
+%mend;
+
+***How to Call the Updated Macro:****
+
+%join_with_observation_split(upd_lib=prod, 
+                             rawdata_lib=rawdata, 
+                             rawdata_table1=drugissue1, 
+                             rawdata_table2=drugissue2,
+                             out_lib1=drug1, 
+                             out_lib2=drug2, 
+                             final_out_lib=Subset_Product_aurum);
+
+
+
