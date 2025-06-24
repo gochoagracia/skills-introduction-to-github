@@ -1,10 +1,15 @@
-/*Now we will do the merging of diagnosis*/
+/* Assign libnames */
 libname rawdata "F:\Projects\Student\Gabriela Ochoa Gracia\Rawdata";
-libname codes "F:\Projects\Student\Gabriela Ochoa Gracia\Final codelist txt";
-libname subsets "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Diagnosis_aurum";
-****Updated Macro for Diagnosis File Merge (with dual rawdata split)****
+libname diagcl "F:\Projects\Student\Gabriela Ochoa Gracia\Final codelist txt\diagnosis codelist";
+libname prodcl "F:\Projects\Student\Gabriela Ochoa Gracia\Final codelist txt\product codelist";
+libname sdiag   "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Diagnosis_aurum";
+libname sprod   "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Product_aurum";
 
-%macro join_with_observation_split(upd_lib=, rawdata_lib=, rawdata_table1=, rawdata_table2=, out_lib1=, out_lib2=, final_out_lib=, suffix=_subset);
+/* Macro to join diagnosis codelists with observation1 + observation2 */
+%macro join_with_observation_split(
+    upd_lib=, rawdata_lib=, rawdata_table1=, rawdata_table2=,
+    final_out_lib=, suffix=_subset
+);
 
     proc sql noprint;
         select memname into :dslist separated by ' '
@@ -15,51 +20,34 @@ libname subsets "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Diagnosis_aur
     %let i = 1;
     %do %while(%scan(&dslist., &i) ne );
         %let dsname = %scan(&dslist., &i);
+        %let shortname = %substr(&dsname, 1, 24);  /* Avoids >32 char names */
 
-        %let shortname = %substr(&dsname, 1, 20);
-        %let out_table1 = &out_lib1..&shortname.&suffix.;
-        %let out_table2 = &out_lib2..&shortname.&suffix.;
-        %let final_out = &final_out_lib..&shortname.&suffix.;
+        proc sort data=&upd_lib..&dsname; by medcodeid; run;
 
-        proc sort data=&upd_lib..&dsname; by MedCodeId; run;
-
-        data &out_table1;
-            merge &rawdata_lib..&rawdata_table1(in=ina) &upd_lib..&dsname(in=inb);
-            by MedCodeId;
-            if ina and inb;
+        data obs1 obs2;
+            set &rawdata_lib..&rawdata_table1(in=ina)
+                &rawdata_lib..&rawdata_table2(in=inb);
         run;
 
-        data &out_table2;
-            merge &rawdata_lib..&rawdata_table2(in=ina) &upd_lib..&dsname(in=inb);
-            by MedCodeId;
-            if ina and inb;
-        run;
+        proc sort data=obs1; by medcodeid; run;
+        proc sort data=obs2; by medcodeid; run;
 
-        data &final_out;
-            set &out_table1 &out_table2;
+        data &final_out_lib..&shortname.&suffix.;
+            set 
+                (select * from obs1 as a inner join &upd_lib..&dsname as b on a.medcodeid = b.medcodeid)
+                (select * from obs2 as a inner join &upd_lib..&dsname as b on a.medcodeid = b.medcodeid);
         run;
 
     %let i = %eval(&i + 1);
     %end;
+
 %mend;
 
-***How to Call the Updated Macro***
-
-%join_with_observation_split(upd_lib=diag, 
-                             rawdata_lib=rawdata, 
-                             rawdata_table1=observation1, 
-                             rawdata_table2=observation2,
-                             out_lib1=obs1, 
-                             out_lib2=obs2, 
-                             final_out_lib=Subset_Diagnosis_aurum);
-
-***Doing the same for the product and drugissue***
-libname rawdata "F:\Projects\Student\Gabriela Ochoa Gracia\Rawdata";
-libname codes "F:\Projects\Student\Gabriela Ochoa Gracia\Final codelist txt";
-libname subsets "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Product_aurum";
-***Updated Macro for Product File Merge (with dual rawdata split)****
-
-%macro join_with_drugissue_split(upd_lib=, rawdata_lib=, rawdata_table1=, rawdata_table2=, out_lib1=, out_lib2=, final_out_lib=, suffix=_subset);
+/* Macro to join product codelists with drugissue1 + drugissue2 */
+%macro join_with_drugissue_split(
+    upd_lib=, rawdata_lib=, rawdata_table1=, rawdata_table2=,
+    final_out_lib=, suffix=_subset
+);
 
     proc sql noprint;
         select memname into :dslist separated by ' '
@@ -70,43 +58,56 @@ libname subsets "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Product_aurum
     %let i = 1;
     %do %while(%scan(&dslist., &i) ne );
         %let dsname = %scan(&dslist., &i);
+        %let shortname = %substr(&dsname, 1, 24);  /* Avoids >32 char names */
 
-        %let shortname = %substr(&dsname, 1, 20);
-        %let out_table1 = &out_lib1..&shortname.&suffix.;
-        %let out_table2 = &out_lib2..&shortname.&suffix.;
-        %let final_out = &final_out_lib..&shortname.&suffix.;
-
-        proc sort data=&upd_lib..&dsname; by ProdcodeId; run;
-
-        data &out_table1;
-            merge &rawdata_lib..&rawdata_table1(in=ina) &upd_lib..&dsname(in=inb);
-            by ProdCodeId;
-            if ina and inb;
+        /* Convert prodcodeid to CHAR for consistent matching */
+        data drug1;
+            set &rawdata_lib..&rawdata_table1;
+            prodcodeid_char = put(prodcodeid, $20.);
         run;
 
-        data &out_table2;
-            merge &rawdata_lib..&rawdata_table2(in=ina) &upd_lib..&dsname(in=inb);
-            by ProdCodeId;
-            if ina and inb;
+        data drug2;
+            set &rawdata_lib..&rawdata_table2;
+            prodcodeid_char = put(prodcodeid, $20.);
         run;
 
-        data &final_out;
-            set &out_table1 &out_table2;
+        data codelist;
+            set &upd_lib..&dsname;
+            prodcodeid_char = put(prodcodeid, $20.);
+        run;
+
+        proc sort data=drug1; by prodcodeid_char; run;
+        proc sort data=drug2; by prodcodeid_char; run;
+        proc sort data=codelist; by prodcodeid_char; run;
+
+        data &final_out_lib..&shortname.&suffix.;
+            set 
+                (select * from drug1 as a inner join codelist as b on a.prodcodeid_char = b.prodcodeid_char)
+                (select * from drug2 as a inner join codelist as b on a.prodcodeid_char = b.prodcodeid_char);
         run;
 
     %let i = %eval(&i + 1);
     %end;
+
 %mend;
 
-***How to Call the Updated Macro:****
+/*** Run both macros ***/
+%join_with_observation_split(
+    upd_lib=diagcl,
+    rawdata_lib=rawdata,
+    rawdata_table1=observation1,
+    rawdata_table2=observation2,
+    final_out_lib=sdiag
+);
 
-%join_with_observation_split(upd_lib=prod, 
-                             rawdata_lib=rawdata, 
-                             rawdata_table1=drugissue1, 
-                             rawdata_table2=drugissue2,
-                             out_lib1=drug1, 
-                             out_lib2=drug2, 
-                             final_out_lib=Subset_Product_aurum);
+%join_with_drugissue_split(
+    upd_lib=prodcl,
+    rawdata_lib=rawdata,
+    rawdata_table1=drugissue1,
+    rawdata_table2=drugissue2,
+    final_out_lib=sprod
+);
+
 
 
 
