@@ -1,5 +1,5 @@
 /*Now we will do the merging of diagnosis*/
-libname rawdata "F:\Projects\Student\Gabriela Ochoa Gracia\CPRD_Aurum_Simulated_data";
+libname rawdata "F:\Projects\Student\Gabriela Ochoa Gracia\Rawdata";
 libname codes "F:\Projects\Student\Gabriela Ochoa Gracia\Final codelist txt";
 libname subsets "F:\Projects\Student\Gabriela Ochoa Gracia\Subsets_Diagnosis";
 ****Updated Macro for Diagnosis File Merge (with dual rawdata split)****
