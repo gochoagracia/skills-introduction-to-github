@@ -1,1 +1,199 @@
+#--------------------------------------------------
+# 1. Load packages and import SAS data
+#--------------------------------------------------
+install.packages(c("haven", "dplyr", "MatchIt", "tableone", 
+                   "survival", "survminer", "ggplot2", "reader", "broom"))
+library(haven)
+library(dplyr)
+library(MatchIt)
+library(tableone)
+library(survival)
+library(survminer)
+library(ggplot2)
+library(readr)
+library(broom)
 
+# Load SAS file
+main <- read_sas("F:/Projects/Student/Gabriela Ochoa Gracia/Merged/sglt2dpp4_cov_outcom.sas7bdat")
+
+#--------------------------------------------------
+# 2. Data preparation
+#--------------------------------------------------
+main <- main %>%
+  mutate(
+    treated = if_else(drug_class == "SGLT2i", 1, 0),
+    male = if_else(gender == 1, 1, 0),
+    drug_class = trimws(drug_class),
+    gender = as.numeric(trimws(gender))
+  ) %>%
+  filter(drug_class != "", !is.na(gender))
+
+colnames(main)
+
+# Step 1: Select relevant columns
+main_clean <- main %>%
+  select(
+    patid, index_date, drug_class, treated, gender, age, 
+    earliest_mi, earliest_stroke, cprd_ddate,
+    male,
+    obesity_dummy, neuropathy_dummy, retinopathy_dummy, 
+    angiopathy_dummy, nephropathy_dummy, acidosis_dummy, 
+    amputation_dummy, otherdiabcomp_dummy, copd_dummy, 
+    bleeding_dummy, bariatric_dummy, ckd14_dummy, ckd5_dummy, 
+    hypertension_dummy, dyslipidaemia_dummy, weightloss_dummy, 
+    metformin_dummy, sulfonylurea_dummy, glp1ra_dummy, tzd_dummy, 
+    othergld_dummy, insulin_dummy, statins_dummy, acei_dummy, arb_dummy,
+    bb_dummy, lowceiling_dummy, diureticcomboacearb_dummy, 
+    highceiling_dummy, aldo_dummy, otherdiuretics_dummy, 
+    ccb_dummy, digoxin_dummy, antiplatelet_dummy,
+    cancer_dummy, smoker_dummy, frailty_dummy, antiarrytmic_dummy, 
+    alfagluc_dummy, corticoesteroids_dummy, warfarin_dummy
+  )
+
+#delete people with inadequate cprd_date#
+#to delete invalid cprd_ddate
+
+# First get rid of cprd_ddate that is inadequate
+main_unique <- main_clean %>%
+  filter(!(is.na(earliest_mi) & is.na(earliest_stroke) & cprd_ddate < index_date))
+
+# Print number of rows left
+cat("Total rows after filtering:", nrow(main_unique), "\n")
+
+
+# Step 2: Deduplicate
+main_unique1 <- main_unique %>%
+  group_by(patid) %>%
+  arrange(index_date) %>%
+  slice(1) %>%
+  ungroup()
+
+nrow(main_unique1)
+
+
+
+# Step 3: Propensity Score Matching
+ps_formula <- treated ~ age + male +
+  obesity_dummy + neuropathy_dummy + retinopathy_dummy + angiopathy_dummy +
+  nephropathy_dummy + acidosis_dummy + amputation_dummy + otherdiabcomp_dummy +
+  copd_dummy + bleeding_dummy + bariatric_dummy + ckd14_dummy + ckd5_dummy +
+  hypertension_dummy + dyslipidaemia_dummy + weightloss_dummy +
+  metformin_dummy + sulfonylurea_dummy + glp1ra_dummy + tzd_dummy +
+  othergld_dummy + insulin_dummy + statins_dummy + acei_dummy + arb_dummy +
+  bb_dummy + lowceiling_dummy + diureticcomboacearb_dummy + highceiling_dummy +
+  aldo_dummy + otherdiuretics_dummy + ccb_dummy + digoxin_dummy +
+  antiplatelet_dummy + cancer_dummy + smoker_dummy + frailty_dummy +
+  antiarrytmic_dummy + alfagluc_dummy + corticoesteroids_dummy + warfarin_dummy
+
+matchit_obj <- matchit(
+  formula = ps_formula,
+  data = main_unique1,
+  method = "nearest",
+  distance = "logit",
+  caliper = 0.2,
+  ratio = 1
+)
+
+matched_data <- match.data(matchit_obj)
+
+library(dplyr)
+
+# Number of unique patients before matching
+n_before <- main_unique1 %>% distinct(patid) %>% nrow()
+
+# Number of unique patients after matching
+n_after <- matched_data %>% distinct(patid) %>% nrow()
+
+# Number of patients lost due to trimming
+patients_lost <- n_before - n_after
+
+# Print results
+cat("Unique patients before matching:", n_before, "\n")
+cat("Unique patients after matching:", n_after, "\n")
+cat("Patients lost due to trimming:", patients_lost, "\n")
+
+# Step 4: PS Model Summary
+ps_model <- matchit_obj$model
+summary(ps_model)
+
+# Step 5: Baseline Characteristics Table
+main_unique1 <- main_unique1 %>% mutate(index_year = format(index_date, "%Y"))
+matched_data <- matched_data %>% mutate(index_year = format(index_date, "%Y"))
+
+char_vars <- setdiff(names(main_unique1), c("patid", "index_date", "drug_class", "treated", "earliest_mi", "earliest_stroke", "cprd_ddate"))
+factor_vars <- setdiff(char_vars, "age")
+
+table1_before <- CreateTableOne(vars = char_vars, strata = "treated", data = main_unique1, factorVars = factor_vars)
+print(table1_before, smd = TRUE)
+
+table1_after <- CreateTableOne(vars = char_vars, strata = "treated", data = matched_data, factorVars = factor_vars)
+print(table1_after, smd = TRUE)
+
+# Step 6: PS Overlap Plot
+main_unique1$pscore <- matchit_obj$distance
+matched_data$pscore <- matchit_obj$distance[rownames(matched_data)]
+
+# Plot before matching
+ggplot(main_unique1, aes(x = pscore, fill = factor(treated))) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Propensity Score Overlap (Before Matching)", fill = "Group") +
+  theme_minimal()
+
+# Plot after matching
+ggplot(matched_data, aes(x = pscore, fill = factor(treated))) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Propensity Score Overlap (After Matching)", fill = "Group") +
+  theme_minimal()
+
+# Step 7: Create composite outcome
+matched_data <- matched_data %>%
+  mutate(
+    index_date = as.Date(index_date),
+    earliest_mi = as.Date(earliest_mi),
+    earliest_stroke = as.Date(earliest_stroke),
+    cprd_ddate = as.Date(cprd_ddate),
+    composite_event_date = pmin(earliest_mi, earliest_stroke, cprd_ddate, na.rm = TRUE),
+    mace_event = if_else(!is.na(composite_event_date), 1, 0),
+    time_to_mace = as.numeric(difftime(composite_event_date, index_date, units = "days"))
+  )
+# Remove anyone with negative or missing time
+main_filtered <- matched_data %>%
+  filter(!is.na(time_to_mace) & time_to_mace >= 0)
+
+# Step 8: Crude Incidence Rate
+incidence_summary <- main_filtered %>%
+  group_by(treated) %>%
+  summarise(
+    person_years = sum(time_to_mace, na.rm = TRUE) / 365.25,
+    events = sum(mace_event, na.rm = TRUE),
+    incidence_rate_per_1000py = (events / person_years) * 1000
+  )
+print(incidence_summary)
+
+# Step 9: Kaplan-Meier
+
+# Kaplan-Meier
+km_fit_mace <- survfit(Surv(time_to_mace, mace_event) ~ treated, data = main_filtered)
+
+# Plot
+km_plot <- ggsurvplot(
+  km_fit_mace,
+  data = main_filtered,
+  pval = TRUE,
+  conf.int = TRUE,
+  risk.table = TRUE,
+  title = "Kaplan-Meier Curve: MACE",
+  legend.labs = c("DPP4i", "SGLT2i"),
+  xlab = "Days since index date",
+  ylab = "Survival (%)",
+  surv.scale = "percent",
+  break.y.by = 10
+)
+
+print(km_plot)
+
+# Step 10: Cox Model
+cox_model <- coxph(Surv(time_to_mace, mace_event) ~ treated, data = main_filtered)
+summary(cox_model)
+tidy_output <- tidy(cox_model, exponentiate = TRUE, conf.int = TRUE)
+print(tidy_output)
