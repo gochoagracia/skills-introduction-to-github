@@ -1,1 +1,791 @@
+/*join patient and practice*/
+/* Step 1: Define libraries */
+libname rawdata "F:/Projects/Student/Gabriela Ochoa Gracia/Rawdata";
+libname merged "F:/Projects/Student/Gabriela Ochoa Gracia/Merged";
+
+/* Step 2: Combine patient datasets */
+data merged.patient_all;
+    set rawdata.patient1 rawdata.patient2;
+run;
+
+/* Step 3: Combine practice datasets */
+data merged.practice_all;
+    set rawdata.practice1 rawdata.practice2;
+run;
+
+/* Step 4: Sort both datasets by pracid before merging */
+proc sort data=merged.patient_all; by pracid; run;
+proc sort data=merged.practice_all; by pracid; run;
+
+/* Step 5: Merge patients and practices by pracid */
+data merged.patient_practice_merged;
+    merge merged.patient_all(in=a)
+          merged.practice_all(in=b);
+    by pracid;
+    if a; /* Keep all patients */
+
+    /* Construct entry and exit */
+    study_start = '01JAN2012'd;
+    study_end   = '31DEC2024'd;
+
+    entry = max(regstartdate, study_start);
+    exit  = min(regenddate, lcd, cprd_ddate, study_end);
+
+    format entry exit ddmmyy10.;
+run;
+
+/* Step 6: Apply filters after constructing entry and exit */
+data merged.patient_practice_cleaned;
+    set merged.patient_practice_merged;
+
+    /* Exclusion rules */
+    if regstartdate > study_start then delete;  /* Not registered before study */
+    if entry > exit then delete;                /* Invalid date range */
+    if regenddate < study_start then delete;    /* Left practice before study started */
+    if lcd > study_end then delete;             /* Data collected after study */
+    
+run;
+
+/* Step 7: Sort by patid */
+proc sort data=merged.patient_practice_cleaned; by patid; run;
+
+/* Step 8: Count valid patients */
+proc sql;
+    select count(distinct patid) as total_valid_patients
+    from merged.patient_practice_cleaned;
+quit;
+/*creat the sglt2 and dpp4 is columns*/
+libname sprod "F:\Projects\Student\Gabriela Ochoa Gracia\Subset_product_combined";
+libname merged "F:\Projects\Student\Gabriela Ochoa Gracia\Merged";
+
+/* Combine and label all SGLT2i datasets */
+data sglt2_all;
+    set sprod.sglt2plain_new_merged_comb
+        sprod.sglt2combmetmorfin_new_m_comb;
+    drug_class = "SGLT2i";
+run;
+
+/* Combine and label all DPP4i datasets */
+data dpp4_all;
+    set sprod.dpp4isplain_new_merged_comb
+        sprod.dpp4iscombmetmorfin_new_comb;
+    drug_class = "DPP4i";
+run;
+
+/* Combine both classes into one dataset */
+data merged.sglt2_dpp4_combined;
+    set sglt2_all dpp4_all;
+run;
+
+/* Sort the final dataset by patid */
+proc sort data=merged.sglt2_dpp4_combined;
+    by patid;
+run;
+
+proc sort data=merged.patient_practice_cleaned;
+    by patid;
+run;
+
+/* Set libname */
+libname merged "F:\Projects\Student\Gabriela Ochoa Gracia\Merged";
+
+/* Step 1: Merge patient-practice with medications */
+data merged.sglt2_dpp4_patient_merged;
+    merge merged.sglt2_dpp4_combined (in=a)
+          merged.patient_practice_cleaned (in=b);
+    by patid;
+    if a;  /* keep only patients with medication */
+run;
+
+/* Step 2: Sort by patid and issuedate */
+proc sort data=merged.sglt2_dpp4_patient_merged;
+    by patid issuedate;
+run;
+
+/* Step 3: Create index_date for first prescription within entry/exit window */
+proc sql;
+    create table index_dates as
+    select patid,
+           min(issuedate) as index_date format=ddmmyy10.
+    from merged.sglt2_dpp4_patient_merged
+    where issuedate >= entry and issuedate <= exit
+    group by patid;
+quit;
+
+/* Step 4: Merge index_date back */
+data merged.sglt2_dpp4_with_index;
+    merge merged.sglt2_dpp4_patient_merged (in=a)
+          index_dates (in=b);
+    by patid;
+    if a;
+run;
+
+/* Step 5: Remove patients with missing index_date */
+data merged.sglt2_dpp4_final;
+    set merged.sglt2_dpp4_with_index;
+    if index_date ne .;
+run;
+
+/* Step 6: Count final patients with valid index_date */
+proc sql;
+    select count(distinct patid) as num_final_patients
+    from merged.sglt2_dpp4_final;
+quit;
+/*safe index dates*/
+data merged.index_dates; set index_dates; run;
+/*exclude people under 40*/
+
+/* Step 1: Calculate age at index and flag those under 40 */
+data merged.sglt2_dpp4_age40_check;
+    set merged.sglt2_dpp4_final;  /* Your current dataset with index_date */
+    retain under_40;
+    age = year(index_date) - yob;
+    if age < 40 then under_40 = 1;
+        else under_40 = 0;
+run;
+
+/* Step 2: Exclude patients under 40 */
+data merged.sglt2_dpp4_age40plus;
+    set merged.sglt2_dpp4_age40_check;
+    if under_40 = 1 then delete;
+run;
+
+/* Step 3: Count how many patients remain */
+proc sql;
+    select count(distinct patid) as num_patients_age_40_plus
+    from merged.sglt2_dpp4_age40plus;
+quit;
+
+/* Optional: Clean up work library */
+proc datasets library=work kill nolist;
+quit;
+/*exclude people without washout window after index date*/
+/* Step 1: Flag prescriptions issued within 365 days prior to index_date */
+data work.sglt2_dpp4_washout_flags;
+    set merged.sglt2_dpp4_age40plus;
+    by patid;
+    retain within_washout365;
+    if index_date - issuedate > 0 and index_date - issuedate <= 365 then within_washout365 = 1;
+    else within_washout365 = 0;
+run;
+
+/* Step 2: Find max flag per patient (i.e., any prescription in prior 365 days) */
+proc sql;
+    create table work.patients_within_washout365 as
+    select patid,
+           max(within_washout365) as within_washout365_max
+    from work.sglt2_dpp4_washout_flags
+    group by patid;
+quit;
+
+/* Step 3: Merge washout status back into full dataset */
+data work.sglt2_dpp4_washout_flagged;
+    merge work.sglt2_dpp4_washout_flags (in=a)
+          work.patients_within_washout365 (in=b);
+    by patid;
+    if a;
+run;
+
+/* Step 4: Exclude patients with a prescription in the 365 days before index_date */
+data merged.sglt2_dpp4_final_washout;
+    set work.sglt2_dpp4_washout_flagged;
+    if within_washout365_max = 1 then delete;
+run;
+
+/* Step 5: Report number of patients after washout exclusion */
+proc sql;
+    select count(distinct patid) as num_pats_after_washout
+    from merged.sglt2_dpp4_final_washout;
+quit;
+
+/* Step 6: Optional cleanup of work datasets */
+proc datasets library=work nolist;
+    delete sglt2_dpp4_washout_flags 
+           patients_within_washout365 
+           sglt2_dpp4_washout_flagged;
+quit;
+/*exclude patiemt with less than 365 days of follow up until index date*/
+/* Step 1: Flag patients with at least 365 days between regstartdate and index_date */
+data work.sglt2_dpp4_followup_flag;
+    set merged.sglt2_dpp4_final_washout;
+    by patid;
+    retain followup_365;
+    if index_date - regstartdate >= 365 then followup_365 = 1;
+    else followup_365 = 0;
+run;
+
+/* Step 2: Create list of patients with follow-up */
+proc sql;
+    create table work.patients_followup_365 as
+    select patid,
+           max(followup_365) as followup_365_max
+    from work.sglt2_dpp4_followup_flag
+    group by patid;
+quit;
+
+/* Step 3: Merge follow-up flag back into full data */
+data work.sglt2_dpp4_followup_flagged;
+    merge work.sglt2_dpp4_followup_flag (in=a)
+          work.patients_followup_365 (in=b);
+    by patid;
+    if a;
+run;
+
+/* Step 4: Keep only patients with follow-up period = 1 year */
+data merged.sglt2_dpp4_final_followup;
+    set work.sglt2_dpp4_followup_flagged;
+    if followup_365_max = 1;
+run;
+
+/* Step 5: Count final patients */
+proc sql;
+    select count(distinct patid) as num_pats_after_followup_check
+    from merged.sglt2_dpp4_final_followup;
+quit;
+
+/* Step 6: Optional cleanup */
+proc datasets library=work nolist;
+    delete sglt2_dpp4_followup_flag 
+           patients_followup_365 
+           sglt2_dpp4_followup_flagged;
+quit;
+
+/*starting to apply the inclusion criteria*/
+/*age 40, washout period and 1 year follow up prior to index date already applied*/
+/*only include patients with t2dm diagnosis and antihyperglycemia medication*/
+
+/* Set libraries */
+libname diag     "F:\Projects\Student\Gabriela Ochoa Gracia\Subset_Diagnosis_combined";
+libname product  "F:\Projects\Student\Gabriela Ochoa Gracia\Subset_product_combined";
+libname merged   "F:\Projects\Student\Gabriela Ochoa Gracia\Merged";
+libname extra    "F:\Projects\Student\Gabriela Ochoa Gracia\Merged";
+
+/* Step 1: Sort index_dates */
+proc sort data=merged.index_dates; by patid; run;
+
+/* Step 2: Sort diagnosis dataset */
+proc sort data=diag.diabetestype2_merged; by patid; run;
+
+/* Step 3: Flag patients with T2DM diagnosis within 365 days before index_date */
+data t2dm_diag_flagged;
+    merge diag.diabetestype2_merged (in=a) merged.index_dates (in=b);
+    by patid;
+    if a and b;
+    if obsdate >= index_date - 365 and obsdate <= index_date then has_t2dm_diag = 1;
+    else has_t2dm_diag = 0;
+run;
+
+proc sql;
+    create table t2dm_diag_patients as
+    select patid, max(has_t2dm_diag) as has_t2dm_diag
+    from t2dm_diag_flagged
+    group by patid;
+quit;
+
+/* Step 4: Append all antihyperglycemic product datasets but not the exposure medication */
+data all_t2dm_drugs;
+    set 
+        product.biguanidasplain_new_merg_comb
+        product.bigucombglm_new_merged_comb
+		product.alfaglucoinhibspla_new_m_comb
+        product.glp1ras_new_merged_comb
+        product.insulin_new_merged_comb
+        product.otherglms_new_merged_comb
+        product.sulfonylureaplain_new_me_comb
+        product.thiazolidinediones_new_m_comb;
+run;
+/* Step 2: Sort for merge */
+proc sort data=work.all_t2dm_drugs; by patid issuedate; run;
+proc sort data=merged.index_dates; by patid; run;
+
+/* Step 3: Flag patients with T2DM drug use in the year before index_date */
+data work.t2dm_drug_flagged;
+    merge work.all_t2dm_drugs(in=a)
+          merged.index_dates(in=b);
+    by patid;
+    if a and b;
+    if issuedate >= index_date - 365 and issuedate <= index_date then has_t2dm_drug = 1;
+    else has_t2dm_drug = 0;
+run;
+
+/* Step 4: Create flag per patient */
+proc sql;
+    create table work.t2dm_drug_patients as
+    select patid, max(has_t2dm_drug) as has_t2dm_drug
+    from work.t2dm_drug_flagged
+    group by patid;
+quit;
+
+/* Step 5: Sort main cohort before merge */
+proc sort data=merged.sglt2_dpp4_final_followup; by patid; run;
+
+/* Step 6: Merge with diagnosis and drug flags; keep those meeting T2DM criteria */
+data merged.sglt2dpp4_followup_T2DM;
+    merge merged.sglt2_dpp4_final_followup (in=a)
+          t2dm_diag_patients
+          work.t2dm_drug_patients;
+    by patid;
+    if a;
+    if coalesce(has_t2dm_diag, 0) = 1 or coalesce(has_t2dm_drug, 0) = 1;
+run;
+
+/* Step 7: Count patients */
+proc sql;
+    select count(distinct patid) as num_pats_with_T2DM
+    from merged.sglt2dpp4_followup_T2DM;
+quit;
+
+/* Step 8: Clean up temporary datasets */
+proc datasets lib=work nolist;
+    delete all_t2dm_drugs t2dm_drug_flagged t2dm_drug_patients;
+quit;
+
+
+/*Apply the CV risk or disease inclusion crteria*/
+/* Libraries */
+libname diag     "F:\Projects\Student\Gabriela Ochoa Gracia\Subset_Diagnosis_combined";
+libname product  "F:\Projects\Student\Gabriela Ochoa Gracia\Subset_product_combined";
+libname merged   "F:\Projects\Student\Gabriela Ochoa Gracia\Merged";
+libname extra    "F:\Projects\Student\Gabriela Ochoa Gracia\Merged";
+
+/* Step 1: Sort index_dates */
+proc sort data=merged.index_dates; by patid; run;
+
+/*--- Step 1: Flag established CVD diagnoses ---*/
+data cvd_diagnosis_all;
+    set 
+        diag.ihd_merged
+        diag.stableangina_merged
+        diag.cadpartofihd_merged
+        diag.carotidstenting_merged
+        diag.pad_merged;
+run;
+
+proc sort data=cvd_diagnosis_all; by patid; run;
+
+data cvd_flagged;
+    merge cvd_diagnosis_all(in=a) merged.index_dates(in=b);
+    by patid;
+    if a and b;
+    if obsdate >= index_date - 365 and obsdate <= index_date then has_cvd = 1;
+    else has_cvd = 0;
+run;
+
+proc sql;
+    create table cvd_patients as
+    select patid, max(has_cvd) as has_cvd
+    from cvd_flagged
+    group by patid;
+quit;
+
+
+/*--- Step 2: Flag CV risk diagnoses ---*/
+data risk_diag_all;
+    set 
+        diag.dyslipidaemia_merged
+        diag.hypertension_merged
+        diag.smoker_merged;
+run;
+
+proc sort data=risk_diag_all; by patid; run;
+
+data risk_diag_flagged;
+    merge risk_diag_all(in=a) merged.index_dates(in=b);
+    by patid;
+    if a and b;
+    if obsdate >= index_date - 365 and obsdate <= index_date then has_risk_diag = 1;
+    else has_risk_diag = 0;
+run;
+
+proc sql;
+    create table risk_diag_patients as
+    select patid, max(has_risk_diag) as has_risk_diag
+    from risk_diag_flagged
+    group by patid;
+quit;
+/*Append all cv risk product datasets but not the exposure medication */
+data risk_drugs;
+    set 
+
+product.statinsplain_new_merged_comb
+        product.mercurialdiuretics_new_m_comb
+        product.otherdiuretics_new_merge_comb
+        product.thiazideplain_new_merged_comb
+        product.hiceilingaryloxy_new_mer_comb
+        product.hicesulfonamideplain_new_comb
+        product.potsparag_new_merged_comb
+        product.locesulfonamideplain_new_m_comb
+        product.thiazidecombothers_new_m_comb
+        product.aldostagonplai_new_merge_comb
+        product.lohicelingdiua_new_merge_comb
+        product.sulfonamcombpot_new_merg_comb
+        product.antiarrytmicsplain_new_m_comb
+        product.acecombdiuretics_new_mer_comb
+        product.arbcombdiuretics_new_mer_comb
+        product.acecombccb_new_merged_comb
+        product.aceplain_new_merged_comb
+        product.arbcombccb_new_merged_comb
+        product.arbplain_new_merged_comb
+        product.ccbplain_new_merged_comb
+        product.betablockercombccb_new_m_comb
+        product.betablockcombdiur_new_me_comb
+        product.betablockercombother_new_comb
+        product.betablockerplain_new_mer_comb;
+        
+  run;
+/*--- Step 3 sort risk_drugs ---*/
+proc sort data=risk_drugs; by patid; run;
+
+data risk_drugs_flagged;
+    merge risk_drugs (in=a) merged.index_dates (in=b);
+    by patid;
+    if a and b;
+    if issuedate >= index_date - 365 and issuedate <= index_date then has_risk_drug = 1;
+    else has_risk_drug = 0;
+run;
+
+proc sql;
+    create table risk_drug_patients as
+    select patid, max(has_risk_drug) as has_risk_drug
+    from risk_drugs_flagged
+    group by patid;
+quit;
+
+
+/*--- Step 4: Merge everything and apply final inclusion filter ---*/
+proc sort data=merged.sglt2dpp4_followup_T2DM; by patid; run;
+
+data merged.sglt2dpp4_followup_T2DM_CVR;
+    merge merged.sglt2dpp4_followup_T2DM (in=a)
+          cvd_patients
+          risk_diag_patients
+          risk_drug_patients;
+    by patid;
+    if a;
+
+    /* Calculate age */
+    age = year(index_date) - yob;
+    
+
+    /* Replace missing flags with 0 */
+    has_cvd = coalesce(has_cvd, 0);
+    has_risk_diag = coalesce(has_risk_diag, 0);
+    has_risk_drug = coalesce(has_risk_drug, 0);
+
+    /* Count risk factors and age eligibility */
+    risk_factors = has_risk_diag + has_risk_drug;
+    age_highrisk = ((gender = 1 and age >= 55) or (gender = 2 and age >= 60));
+
+    /* Inclusion condition */
+    if has_cvd = 1 or (age_highrisk and risk_factors >= 1);
+run;
+
+proc sql;
+    select count(distinct patid) as num_pats_with_high_cv_risk
+    from merged.sglt2dpp4_followup_T2DM_CVR;
+quit;
+proc datasets lib=work nolist;
+    delete risk_drugs risk_drugs_flagged;
+quit;
+
+
+/*74104 patients*/
+/*now we apply the rest of exclusion criteria t1dm and acute cv event and medication*/
+/*=== Step 0: Sort input data ===*/
+proc sort data=diag.unstableangina_merged; by patid; run;
+proc sort data=diag.mi_merged; by patid; run;
+proc sort data=diag.stroke_merged; by patid; run;
+proc sort data=diag.tia_merged; by patid; run;
+proc sort data=diag.sustainedtachicardia_merged; by patid; run;
+proc sort data=diag.heartfailure_merged; by patid; run;
+proc sort data=diag.diabetestype1_merged; by patid; run;
+proc sort data=product.thiazolidinediones_new_m_comb; by patid; run;
+proc sort data=product.sglt2combdpp41_new_merge_comb; by patid; run;
+proc sort data=merged.index_dates; by patid; run;
+
+/*=== Step 1: Append all exclusion diagnoses ===*/
+data exclusion_conditions;
+    set 
+        diag.unstableangina_merged
+        diag.mi_merged
+        diag.stroke_merged
+        diag.tia_merged
+        diag.sustainedtachicardia_merged
+        diag.heartfailure_merged
+        diag.diabetestype1_merged;
+run;
+
+/* Sort exclusion_conditions by patid and obsdate */
+proc sort data=work.exclusion_conditions; 
+    by patid obsdate; 
+run;
+
+/* Still sort index_dates by patid only (no obsdate in that dataset) */
+proc sort data=merged.index_dates; 
+    by patid; 
+run;
+
+/*=== Step 2: Merge and flag diagnosis-based exclusions within 365 days before index_date ===*/
+data work.exclusion_flagged;
+    merge work.exclusion_conditions(in=a) merged.index_dates(in=b);
+    by patid;
+
+    if a and b and not missing(obsdate) and not missing(index_date) then do;
+        if obsdate >= index_date - 365 and obsdate <= index_date then has_exclusion = 1;
+        else has_exclusion = 0;
+    end;
+    else has_exclusion = 0;
+run;
+
+/*=== Step 3: Summarise flagged exclusions ===*/
+proc sql;
+    create table patients_to_exclude_diagnosis as
+    select patid, max(has_exclusion) as has_exclusion
+    from work.exclusion_flagged
+    group by patid
+    having calculated has_exclusion = 1;
+quit;
+/*=== Step 3: Append all exclusion drugs ===*/
+data exclusion_drugs;
+    set 
+        product.thiazolidinediones_new_m_comb
+        product.sglt2combdpp41_new_merge_comb;
+run;
+proc sort data=exclusion_drugs; by patid; run;
+proc sort data=merged.index_dates; by patid; run;
+/*=== Step 4: Flag drug-based exclusions (within 365 days before index date) ===*/
+data exclusion_drugs_flagged;
+    merge exclusion_drugs(in=a) merged.index_dates(in=b);
+    by patid;
+
+    if a and b and not missing(issuedate) and not missing(index_date) then do;
+        if issuedate >= index_date - 365 and issuedate <= index_date then has_exclusion_drug = 1;
+        else has_exclusion_drug = 0;
+    end;
+    else has_exclusion_drug = 0;
+run;
+
+proc sql;
+    create table patients_to_exclude_drugs as
+    select patid, max(has_exclusion_drug) as has_exclusion_drug
+    from exclusion_drugs_flagged
+    group by patid
+    having calculated has_exclusion_drug = 1;
+quit;
+
+/*=== Step 5: Combine all exclusions ===*/
+data patients_to_exclude_all;
+    merge patients_to_exclude_diagnosis(in=a)
+          patients_to_exclude_drugs(in=b);
+    by patid;
+    if a or b;
+    has_exclusion_final = 1; /* optional flag */
+run;
+
+/*=== Step 6: Exclude patients from main cohort ===*/
+proc sort data=merged.sglt2dpp4_followup_T2DM_CVR; by patid; run;
+proc sort data=patients_to_exclude_all; by patid; run;
+
+data merged.sglt2dpp4_final_cohort;
+    merge merged.sglt2dpp4_followup_T2DM_CVR (in=a)
+          patients_to_exclude_all (in=b keep=patid has_exclusion_final);
+    by patid;
+    if a and not b; /* Keep only non-excluded patients */
+run;
+
+/*=== Step 7: Summary count ===*/
+proc sql;
+    select count(distinct patid) as final_cohort_size
+    from merged.sglt2dpp4_final_cohort;
+quit;
+
+
+/*Before proceeding to R I have to create dummy variables for medication
+comorbidities BMI and other medication this will be applied to the propensity score*/
+/* Define libraries */
+libname diag "F:\Projects\Student\Gabriela Ochoa Gracia\Subset_Diagnosis_Combined";
+libname product "F:\Projects\Student\Gabriela Ochoa Gracia\Subset_product_combined";
+libname merged "F:\Projects\Student\Gabriela Ochoa Gracia\Merged";
+
+/* Macro to create diagnosis dummy */
+%macro create_diag_dummy(subset=, flagname=);
+    proc sort data=diag.&subset; by patid; run;
+    proc sort data=merged.index_dates; by patid; run;
+
+    data &flagname._flagged;
+        merge diag.&subset(in=a) merged.index_dates(in=b);
+        by patid;
+        if a and b;
+        if obsdate < index_date then has_&flagname. = 1;
+        else has_&flagname. = 0;
+    run;
+
+    proc sql;
+        create table &flagname._dummy as
+        select patid, max(has_&flagname.) as &flagname._dummy
+        from &flagname._flagged
+        group by patid;
+    quit;
+%mend;
+
+/* Macro to create product dummy */
+%macro create_combined_prod_dummy(subsets=, flagname=);
+    data _combined_&flagname.;
+        set 
+            %do i = 1 %to %sysfunc(countw(&subsets.));
+                product.%scan(&subsets., &i.)
+            %end;
+        ;
+    run;
+
+    proc sort data=_combined_&flagname.; by patid; run;
+    proc sort data=merged.index_dates; by patid; run;
+
+    data &flagname._flagged;
+        merge _combined_&flagname.(in=a) merged.index_dates(in=b);
+        by patid;
+        if a and b;
+        if issuedate >= index_date - 365 and issuedate <= index_date then has_&flagname. = 1;
+        else has_&flagname. = 0;
+    run;
+
+    proc sql;
+        create table &flagname._dummy as
+        select patid, max(has_&flagname.) as &flagname._dummy
+        from &flagname._flagged
+        group by patid;
+    quit;
+%mend;
+
+/* Diagnosis dummy variables */
+%create_diag_dummy(subset=obesity_merged, flagname=obesity)
+%create_diag_dummy(subset=neuropathy_merged, flagname=neuropathy)
+%create_diag_dummy(subset=retinopathy_merged, flagname=retinopathy)
+%create_diag_dummy(subset=peripheralangiopathy_merged, flagname=angiopathy)
+%create_diag_dummy(subset=nephropathy_merged, flagname=nephropathy)
+%create_diag_dummy(subset=ketolactoacidosis_merged, flagname=acidosis)
+%create_diag_dummy(subset=legamputation_merged, flagname=amputation)
+%create_diag_dummy(subset=copdathma_merged, flagname=copd)
+%create_diag_dummy(subset=majororganbleeding_merged, flagname=bleeding)
+%create_diag_dummy(subset=bariatricsurgery_merged, flagname=bariatric)
+%create_diag_dummy(subset=ckd14_merged, flagname=ckd14)
+%create_diag_dummy(subset=ckd5_merged, flagname=ckd5)
+%create_diag_dummy(subset=otherdiabeticcomplicat_merged, flagname=otherdiabcomp)
+%create_diag_dummy(subset=hypertension_merged, flagname=hypertension)
+%create_diag_dummy(subset=dyslipidaemia_merged, flagname=dyslipidaemia)
+%create_diag_dummy(subset=cancer_merged, flagname=cancer)
+%create_diag_dummy(subset=frailty_merged, flagname=frailty)
+%create_diag_dummy(subset=smoker_merged, flagname=smoker)
+
+/* Product dummy variables */
+%create_combined_prod_dummy(subsets=biguanidasplain_new_merg_comb bigucombglm_new_merged_comb, flagname=metformin)
+%create_combined_prod_dummy(subsets=sulfonylureaplain_new_me_comb, flagname=sulfonylurea)
+%create_combined_prod_dummy(subsets=glp1ras_new_merged_comb, flagname=glp1ra)
+%create_combined_prod_dummy(subsets=thiazolidinediones_new_m_comb, flagname=tzd)
+%create_combined_prod_dummy(subsets=otherglms_new_merged_comb, flagname=othergld)
+%create_combined_prod_dummy(subsets=insulin_new_merged_comb, flagname=insulin)
+%create_combined_prod_dummy(subsets=alfaglucoinhibspla_new_m_comb, flagname=alfagluc)
+
+%create_combined_prod_dummy(subsets=acecombccb_new_merged_comb aceplain_new_merged_comb, flagname=acei)
+%create_combined_prod_dummy(subsets=arbcombccb_new_merged_comb arbplain_new_merged_comb, flagname=arb)
+%create_combined_prod_dummy(subsets=betablockercombccb_new_m_comb betablockercombother_new_comb betablockerplain_new_mer_comb betablockcombdiur_new_me_comb, flagname=bb)
+%create_combined_prod_dummy(subsets=locesulfonamideplain_new_m_comb thiazidecombothers_new_m_comb thiazideplain_new_merged_comb lohicelingdiua_new_merge_comb, flagname=lowceiling)
+%create_combined_prod_dummy(subsets=acecombdiuretics_new_mer_comb arbcombdiuretics_new_mer_comb, flagname=diureticcomboacearb)
+%create_combined_prod_dummy(subsets=hiceilingaryloxy_new_mer_comb hicesulfonamideplain_new_comb lohicelingdiua_new_merge_comb, flagname=highceiling)
+%create_combined_prod_dummy(subsets=sulfonamcombpot_new_merg_comb potsparag_new_merged_comb aldostagonplai_new_merge_comb, flagname=aldo)
+%create_combined_prod_dummy(subsets=otherdiuretics_new_merge_comb, flagname=otherdiuretics)
+%create_combined_prod_dummy(subsets=ccbplain_new_merged_comb betablockercombccb_new_m_comb arbcombccb_new_merged_comb acecombccb_new_merged_comb, flagname=ccb)
+
+%create_combined_prod_dummy(subsets=digoxinanddigotoxin_new_comb, flagname=digoxin)
+%create_combined_prod_dummy(subsets=statinsplain_new_merged_comb statinscomlipidmod_new_m_comb, flagname=statins)
+%create_combined_prod_dummy(subsets=warfarin_new_merged_comb, flagname=warfarin)
+%create_combined_prod_dummy(subsets=antiplateletplain_new_me_comb, flagname=antiplatelet)
+%create_combined_prod_dummy(subsets=weightloss_new_merged_comb, flagname=weightloss)
+%create_combined_prod_dummy(subsets=antiarrytmicsplain_new_m_comb, flagname=antiarrytmic)
+%create_combined_prod_dummy(subsets=corticoesteroids_new_merg_comb, flagname=corticoesteroids)
+
+/* Final merge step */
+proc sort data=merged.sglt2dpp4_final_cohort; by patid; run;
+
+data merged.sglt2dpp4_final_covariates;
+    merge
+        merged.sglt2dpp4_final_cohort (in=a)
+        obesity_dummy neuropathy_dummy retinopathy_dummy angiopathy_dummy nephropathy_dummy
+        acidosis_dummy amputation_dummy copd_dummy bleeding_dummy bariatric_dummy
+        ckd14_dummy ckd5_dummy otherdiabcomp_dummy hypertension_dummy dyslipidaemia_dummy
+        cancer_dummy frailty_dummy smoker_dummy
+        metformin_dummy sulfonylurea_dummy glp1ra_dummy tzd_dummy othergld_dummy insulin_dummy alfagluc_dummy
+        acei_dummy arb_dummy bb_dummy lowceiling_dummy diureticcomboacearb_dummy
+        highceiling_dummy aldo_dummy otherdiuretics_dummy ccb_dummy
+        digoxin_dummy statins_dummy warfarin_dummy antiplatelet_dummy weightloss_dummy
+        antiarrytmic_dummy corticoesteroids_dummy;
+    by patid;
+
+    array vars {*} _numeric_;
+    do i = 1 to dim(vars);
+        if vars[i] = . then vars[i] = 0;
+    end;
+    drop i;
+run;
+/*now i will asses the outcomes*/
+/*----------------------------------------------------------*/
+/* Step 0: Define libraries                                 */
+/*----------------------------------------------------------*/
+libname diag   "F:\Projects\Student\Gabriela Ochoa Gracia\Subset_Diagnosis_combined";
+libname merged "F:\Projects\Student\Gabriela Ochoa Gracia\Merged";
+
+
+/* Sort by patid before merging */
+proc sort data=diag.mi_merged;     by patid; run;
+proc sort data=diag.stroke_merged; by patid; run;
+proc sort data=merged.index_dates; by patid; run;
+
+/*----------------------------------------------------------*/
+/* Step 2: Merge with index_date to prepare for filtering   */
+/*----------------------------------------------------------*/
+data work.mi_index;
+    merge diag.mi_merged(in=a) merged.index_dates(in=b);
+    by patid;
+    if a and b;
+run;
+
+data work.stroke_index;
+    merge diag.stroke_merged(in=a) merged.index_dates(in=b);
+    by patid;
+    if a and b;
+run;
+
+/*----------------------------------------------------------*/
+/* Step 3: Create earliest post-index MI and stroke dates   */
+/*----------------------------------------------------------*/
+proc sql;
+    create table work.earliest_mi as
+    select patid,
+           min(obsdate) as earliest_mi format=ddmmyy10.
+    from work.mi_index
+    where obsdate >= index_date
+    group by patid;
+quit;
+
+proc sql;
+    create table work.earliest_stroke as
+    select patid,
+           min(obsdate) as earliest_stroke format=ddmmyy10.
+    from work.stroke_index
+    where obsdate >= index_date
+    group by patid;
+quit;
+
+/*----------------------------------------------------------*/
+/* Step 4: Merge outcomes into a NEW analytical dataset     */
+/*----------------------------------------------------------*/
+proc sort data=merged.sglt2dpp4_final_covariates; by patid; run;
+
+data merged.sglt2dpp4_cov_outcom;
+    merge merged.sglt2dpp4_final_covariates (in=a)
+          work.earliest_mi
+          work.earliest_stroke;
+    by patid;
+    if a;
+run;
 
