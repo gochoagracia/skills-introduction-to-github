@@ -721,10 +721,21 @@ data merged.sglt2dpp4_final_covariates;
         antiarrytmic_dummy corticoesteroids_dummy;
     by patid;
 
-    array vars {*} _numeric_;
+    array vars {*} 
+        obesity_dummy neuropathy_dummy retinopathy_dummy angiopathy_dummy nephropathy_dummy
+        acidosis_dummy amputation_dummy copd_dummy bleeding_dummy bariatric_dummy
+        ckd14_dummy ckd5_dummy otherdiabcomp_dummy hypertension_dummy dyslipidaemia_dummy
+        cancer_dummy frailty_dummy smoker_dummy
+        metformin_dummy sulfonylurea_dummy glp1ra_dummy tzd_dummy othergld_dummy insulin_dummy alfagluc_dummy
+        acei_dummy arb_dummy bb_dummy lowceiling_dummy diureticcomboacearb_dummy
+        highceiling_dummy aldo_dummy otherdiuretics_dummy ccb_dummy
+        digoxin_dummy statins_dummy warfarin_dummy antiplatelet_dummy weightloss_dummy
+        antiarrytmic_dummy corticoesteroids_dummy;
+
     do i = 1 to dim(vars);
         if vars[i] = . then vars[i] = 0;
     end;
+
     drop i;
 run;
 /*now i will asses the outcomes*/
