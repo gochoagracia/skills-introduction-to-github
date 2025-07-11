@@ -50,26 +50,15 @@ main_clean <- main %>%
     alfagluc_dummy, corticoesteroids_dummy, warfarin_dummy
   )
 
-#delete people with inadequate cprd_date#
-#to delete invalid cprd_ddate
-
-# First get rid of cprd_ddate that is inadequate
-main_unique <- main_clean %>%
-  filter(!(is.na(earliest_mi) & is.na(earliest_stroke) & cprd_ddate < index_date))
-
-# Print number of rows left
-cat("Total rows after filtering:", nrow(main_unique), "\n")
-
 
 # Step 2: Deduplicate
-main_unique1 <- main_unique %>%
+main_unique1 <- main_clean %>%
   group_by(patid) %>%
   arrange(index_date) %>%
   slice(1) %>%
   ungroup()
 
 nrow(main_unique1)
-
 
 
 # Step 3: Propensity Score Matching
@@ -144,56 +133,111 @@ ggplot(matched_data, aes(x = pscore, fill = factor(treated))) +
   geom_density(alpha = 0.5) +
   labs(title = "Propensity Score Overlap (After Matching)", fill = "Group") +
   theme_minimal()
+#######################################################################################
+# Set fixed study end date
+study_end_date <- as.Date("2024-12-31")
 
-# Step 7: Create composite outcome
-matched_data <- matched_data %>%
+# Recalculate variables cleanly
+main_clean_matched <- main_clean_matched %>%
   mutate(
     index_date = as.Date(index_date),
     earliest_mi = as.Date(earliest_mi),
     earliest_stroke = as.Date(earliest_stroke),
     cprd_ddate = as.Date(cprd_ddate),
+    
+    # Composite event date = earliest MI, stroke, or death (not study end)
     composite_event_date = pmin(earliest_mi, earliest_stroke, cprd_ddate, na.rm = TRUE),
-    mace_event = if_else(!is.na(composite_event_date), 1, 0),
-    time_to_mace = as.numeric(difftime(composite_event_date, index_date, units = "days"))
+    
+    # Censoring date: earliest of event or study end
+    censoring_date = pmin(composite_event_date, study_end_date, na.rm = TRUE),
+    
+    # Event indicator: TRUE only if MI, stroke or death occurred *before* study end
+    mace_event = if_else(!is.na(composite_event_date) & composite_event_date <= study_end_date, 1, 0),
+    
+    # Time to event or censoring
+    time_to_mace = as.numeric(difftime(censoring_date, index_date, units = "days"))
   )
-# Remove anyone with negative or missing time
-main_filtered <- matched_data %>%
-  filter(!is.na(time_to_mace) & time_to_mace >= 0)
 
-# Step 8: Crude Incidence Rate
-incidence_summary <- main_filtered %>%
+# Crude Incidence Rate
+incidence_summary <- main_clean_matched %>%
   group_by(treated) %>%
   summarise(
     person_years = sum(time_to_mace, na.rm = TRUE) / 365.25,
     events = sum(mace_event, na.rm = TRUE),
     incidence_rate_per_1000py = (events / person_years) * 1000
   )
+
 print(incidence_summary)
 
-# Step 9: Kaplan-Meier
+#Kaplan Meier Curve#
+km_fit_mace <- survfit(Surv(time_to_mace, mace_event) ~ treated, data = main_clean_matched)
 
-# Kaplan-Meier
-km_fit_mace <- survfit(Surv(time_to_mace, mace_event) ~ treated, data = main_filtered)
-
-# Plot
 km_plot <- ggsurvplot(
   km_fit_mace,
-  data = main_filtered,
+  data = main_clean_matched,
   pval = TRUE,
   conf.int = TRUE,
   risk.table = TRUE,
-  title = "Kaplan-Meier Curve: MACE",
+  title = "Kaplan-Meier Curve: MACE (ITT)",
   legend.labs = c("DPP4i", "SGLT2i"),
   xlab = "Days since index date",
-  ylab = "Survival (%)",
+  ylab = "Survival probability (%)",
   surv.scale = "percent",
   break.y.by = 10
 )
 
 print(km_plot)
 
-# Step 10: Cox Model
-cox_model <- coxph(Surv(time_to_mace, mace_event) ~ treated, data = main_filtered)
+#Cox Proportional Hazards Model#
+cox_model <- coxph(Surv(time_to_mace, mace_event) ~ treated, data = main_clean_matched)
 summary(cox_model)
-tidy_output <- tidy(cox_model, exponentiate = TRUE, conf.int = TRUE)
-print(tidy_output)
+
+cox_tidy <- tidy(cox_model, exponentiate = TRUE, conf.int = TRUE)
+print(cox_tidy)
+
+#################################################################################
+
+# Set study end date
+study_end_date <- as.Date("2024-12-31")
+
+# Ensure dates are Date class
+main_clean_matched <- main_clean_matched %>%
+  mutate(
+    index_date = as.Date(index_date),
+    earliest_mi = as.Date(earliest_mi),
+    earliest_stroke = as.Date(earliest_stroke),
+    cprd_ddate = as.Date(cprd_ddate)
+  )
+
+# Create helper function to calculate IR
+calc_incidence <- function(data, event_col, event_label) {
+  data %>%
+    mutate(
+      event_date = .data[[event_col]],
+      event_flag = if_else(!is.na(event_date) & event_date <= study_end_date, 1, 0),
+      time_to_event = as.numeric(difftime(
+        pmin(event_date, study_end_date, na.rm = TRUE),
+        index_date,
+        units = "days"
+      ))
+    ) %>%
+    group_by(treated) %>%
+    summarise(
+      person_years = sum(time_to_event, na.rm = TRUE) / 365.25,
+      events = sum(event_flag, na.rm = TRUE),
+      incidence_rate_per_1000py = (events / person_years) * 1000,
+      .groups = "drop"
+    ) %>%
+    mutate(outcome = event_label)
+}
+
+# Calculate separately
+mi_ir <- calc_incidence(main_clean_matched, "earliest_mi", "MI")
+stroke_ir <- calc_incidence(main_clean_matched, "earliest_stroke", "Stroke")
+death_ir <- calc_incidence(main_clean_matched, "cprd_ddate", "All-cause mortality")
+
+# Combine
+all_ir <- bind_rows(mi_ir, stroke_ir, death_ir)
+
+# View results
+print(all_ir)
