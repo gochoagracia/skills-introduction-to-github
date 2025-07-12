@@ -138,26 +138,23 @@ ggplot(matched_data, aes(x = pscore, fill = factor(treated))) +
 study_end_date <- as.Date("2024-12-31")
 
 # Recalculate variables cleanly
-main_clean_matched <- main_clean_matched %>%
+main_clean_matched <- matched_data %>%
   mutate(
-    index_date = as.Date(index_date),
-    earliest_mi = as.Date(earliest_mi),
-    earliest_stroke = as.Date(earliest_stroke),
-    cprd_ddate = as.Date(cprd_ddate),
-    
-    # Composite event date = earliest MI, stroke, or death (not study end)
-    composite_event_date = pmin(earliest_mi, earliest_stroke, cprd_ddate, na.rm = TRUE),
-    
-    # Censoring date: earliest of event or study end
-    censoring_date = pmin(composite_event_date, study_end_date, na.rm = TRUE),
-    
-    # Event indicator: TRUE only if MI, stroke or death occurred *before* study end
-    mace_event = if_else(!is.na(composite_event_date) & composite_event_date <= study_end_date, 1, 0),
-    
-    # Time to event or censoring
-    time_to_mace = as.numeric(difftime(censoring_date, index_date, units = "days"))
-  )
+    # Composite event date: first of MI, stroke, death, or study end
+    composite_event_date = pmin(earliest_mi, earliest_stroke, cprd_ddate, study_end_date, na.rm = TRUE),
 
+    # Event flag: TRUE only if any of the actual events occurred before study end
+    mace_event = if_else(
+      (!is.na(earliest_mi) & earliest_mi <= study_end_date) |
+      (!is.na(earliest_stroke) & earliest_stroke <= study_end_date) |
+      (!is.na(cprd_ddate) & cprd_ddate <= study_end_date),
+      1, 0
+    ),
+
+    # Time to event or censoring
+    time_to_mace = as.numeric(difftime(composite_event_date, index_date, units = "days"))
+  )
+  
 # Crude Incidence Rate
 incidence_summary <- main_clean_matched %>%
   group_by(treated) %>%
@@ -241,3 +238,76 @@ all_ir <- bind_rows(mi_ir, stroke_ir, death_ir)
 
 # View results
 print(all_ir)
+
+############################Calculate separate HR#######################
+# Make sure all dates are properly formatted
+main_clean_matched <- main_clean_matched %>%
+  mutate(
+    index_date = as.Date(index_date),
+    earliest_mi = as.Date(earliest_mi),
+    earliest_stroke = as.Date(earliest_stroke),
+    cprd_ddate = as.Date(cprd_ddate),
+    study_end_date = as.Date("2024-12-31")
+  )
+
+#---------------------------------------
+# MI-specific survival variables
+#---------------------------------------
+main_clean_matched <- main_clean_matched %>%
+  mutate(
+    mi_event = if_else(!is.na(earliest_mi) & earliest_mi <= study_end_date, 1, 0),
+    mi_time = as.numeric(difftime(
+      pmin(earliest_mi, study_end_date, na.rm = TRUE),
+      index_date,
+      units = "days"
+    ))
+  )
+
+cox_mi <- coxph(Surv(mi_time, mi_event) ~ treated, data = main_clean_matched)
+summary_mi <- tidy(cox_mi, exponentiate = TRUE, conf.int = TRUE)
+
+#---------------------------------------
+# Stroke-specific survival variables
+#---------------------------------------
+main_clean_matched <- main_clean_matched %>%
+  mutate(
+    stroke_event = if_else(!is.na(earliest_stroke) & earliest_stroke <= study_end_date, 1, 0),
+    stroke_time = as.numeric(difftime(
+      pmin(earliest_stroke, study_end_date, na.rm = TRUE),
+      index_date,
+      units = "days"
+    ))
+  )
+
+cox_stroke <- coxph(Surv(stroke_time, stroke_event) ~ treated, data = main_clean_matched)
+summary_stroke <- tidy(cox_stroke, exponentiate = TRUE, conf.int = TRUE)
+
+#---------------------------------------
+# All-cause mortality
+#---------------------------------------
+main_clean_matched <- main_clean_matched %>%
+  mutate(
+    death_event = if_else(!is.na(cprd_ddate) & cprd_ddate <= study_end_date, 1, 0),
+    death_time = as.numeric(difftime(
+      pmin(cprd_ddate, study_end_date, na.rm = TRUE),
+      index_date,
+      units = "days"
+    ))
+  )
+
+cox_death <- coxph(Surv(death_time, death_event) ~ treated, data = main_clean_matched)
+summary_death <- tidy(cox_death, exponentiate = TRUE, conf.int = TRUE)
+
+#---------------------------------------
+# Export all three HR summaries
+#---------------------------------------
+library(readr)
+write_csv(summary_mi,    "Rresults/Cox_HR_MI.csv")
+write_csv(summary_stroke,"Rresults/Cox_HR_Stroke.csv")
+write_csv(summary_death, "Rresults/Cox_HR_AllCauseMortality.csv")
+
+# Optional: Print them to console
+print(summary_mi)
+print(summary_stroke)
+print(summary_death)
+
